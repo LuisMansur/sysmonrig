@@ -144,7 +144,12 @@ WS_POPUP=0x80000000; WS_VISIBLE=0x10000000; ULW_ALPHA=0x00000002
 AC_SRC_OVER=0x00; AC_SRC_ALPHA=0x01; GWL_EXSTYLE=-20
 HTCAPTION=2; HTBOTTOMRIGHT=17
 WM_NCHITTEST=0x0084; WM_RBUTTONDOWN=0x0204; WM_DESTROY=0x0002
-WM_EXITSIZEMOVE=0x0232
+WM_EXITSIZEMOVE=0x0232; WM_MOUSEMOVE=0x0200; WM_MOUSELEAVE=0x02A3
+TME_LEAVE=0x00000002
+
+class TRACKMOUSEEVENT(ctypes.Structure):
+    _fields_=[('cbSize',ctypes.c_ulong),('dwFlags',ctypes.c_ulong),
+              ('hwndTrack',HWND),('dwHoverTime',ctypes.c_ulong)]
 
 class POINT(ctypes.Structure):  _fields_=[('x',c_int),('y',c_int)]
 class SIZE(ctypes.Structure):   _fields_=[('cx',c_int),('cy',c_int)]
@@ -209,6 +214,17 @@ def _wnd_proc(hwnd,msg,wparam,lparam):
             rx=pt.x-wr.left; ry=pt.y-wr.top
             if rx>=inst.W-20 and ry>=inst.H-20: return HTBOTTOMRIGHT
             return HTCAPTION
+        if msg==WM_MOUSEMOVE:
+            if not inst._hovered:
+                inst._hovered=True
+                # Ask Windows to send WM_MOUSELEAVE when mouse exits
+                tme=TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT),
+                                    TME_LEAVE,hwnd,0)
+                user32.TrackMouseEvent(byref(tme))
+                inst._paint()   # redraw to show handle
+        if msg==WM_MOUSELEAVE:
+            inst._hovered=False
+            inst._paint()       # redraw to hide handle
         if msg==WM_RBUTTONDOWN:
             user32.DestroyWindow(hwnd); _instances.pop(hwnd,None); return 0
         if msg==WM_DESTROY:
@@ -238,6 +254,7 @@ class Widget:
             WS_EX_LAYERED|WS_EX_TOPMOST|WS_EX_TOOLWINDOW,
             'SysMonWidget','',WS_POPUP|WS_VISIBLE,sx,sy,W,H,None,None,_hinstance,None)
         _instances[self.hwnd]=self
+        self._hovered=False
         self._paint(); self._schedule()
 
     def _get_pos(self):
@@ -258,9 +275,11 @@ class Widget:
         draw=ImageDraw.Draw(img)
         if ok: self._draw(draw,stats,ws)
         else:  tx(draw,self.W//2,self.H//2,'NO SIGNAL',PINK(),F_MED)
-        s=18
-        draw.polygon([(self.W-s,self.H),(self.W,self.H-s),(self.W,self.H)],
-                     fill=(255,255,255,55))
+        # Resize handle — only visible on hover
+        if self._hovered:
+            s=18
+            draw.polygon([(self.W-s,self.H),(self.W,self.H-s),(self.W,self.H)],
+                         fill=(255,255,255,120))
         push_image(self.hwnd,img)
 
     def _schedule(self):
