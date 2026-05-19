@@ -54,6 +54,10 @@ def widgets_running():
     return _widgets is not None and _widgets.poll() is None
 
 # ── Tray menu actions ─────────────────────────────────────────────────────────
+def on_settings(icon, item):
+    from settings import open_settings
+    open_settings()
+
 def on_toggle(icon, item):
     if widgets_running():
         stop_widgets()
@@ -71,8 +75,9 @@ def on_quit(icon, item):
 def make_menu(icon=None):
     label = 'Hide Widgets' if widgets_running() else 'Show Widgets'
     return pystray.Menu(
-        pystray.MenuItem(label,      on_toggle, default=True),
-        pystray.MenuItem('Quit',     on_quit),
+        pystray.MenuItem(label,        on_toggle, default=True),
+        pystray.MenuItem('Settings',   on_settings),
+        pystray.MenuItem('Quit',       on_quit),
     )
 
 # ── Main ──────────────────────────────────────────────────────────────────────

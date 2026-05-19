@@ -2,4 +2,6 @@ flask
 flask-cors
 psutil
 pynvml
-pywebview
+wmi
+pystray
+pillow
