@@ -23,55 +23,65 @@ POS_FILE      = os.path.join(BASE_DIR, 'positions.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 API_URL       = 'http://127.0.0.1:5050/stats'
 
-# ── Palette (overridden live from settings.json) ──────────────────────────────
-BG     = (8,  8,  22, 200)
-BORDER = (50, 50,110, 180)
-BLUE   = (0, 200,255, 255)
-PINK   = (255,45,120, 255)
-GREEN  = (0, 255,157, 255)
-PURPLE = (191,95,255, 255)
-ORANGE = (255,124,0,  255)
-RED    = (255,60, 60, 255)
-DIM    = (80, 120,160, 220)
-TEXT   = (200,230,255, 255)
-RAINBOW = [BLUE, PURPLE, PINK, ORANGE, GREEN]
+# ── Palette stored in a mutable dict so load_colors() always takes effect ─────
+_C = {
+    'blue':   (0,  200,255, 255),
+    'pink':   (255, 45,120, 255),
+    'green':  (0,  255,157, 255),
+    'purple': (191, 95,255, 255),
+    'orange': (255,124,  0, 255),
+    'red':    (255, 60, 60, 255),
+    'dim':    (80, 120,160, 220),
+    'text':   (200,230,255, 255),
+}
 
 def _hex(h, a=255):
-    h=h.lstrip('#'); return tuple(int(h[i:i+2],16) for i in (0,2,4))+(a,)
+    h=h.lstrip('#')
+    return tuple(int(h[i:i+2],16) for i in (0,2,4))+(a,)
 
 def load_colors():
-    global BLUE,PINK,GREEN,PURPLE,ORANGE,RED,DIM,TEXT,RAINBOW
+    """Reload palette from settings.json into _C — mutations visible everywhere."""
     try:
         with open(SETTINGS_FILE) as f: s=json.load(f)
         t=s.get('theme',{})
-        BLUE   = _hex(t.get('blue',   '#00c8ff'))
-        PINK   = _hex(t.get('pink',   '#ff2d78'))
-        GREEN  = _hex(t.get('green',  '#00ff9d'))
-        PURPLE = _hex(t.get('purple', '#bf5fff'))
-        ORANGE = _hex(t.get('orange', '#ff7c00'))
-        RED    = _hex(t.get('red',    '#ff3c3c'))
-        DIM    = _hex(t.get('dim',    '#507090'), 220)
-        TEXT   = _hex(t.get('text',   '#c8e6ff'))
-        RAINBOW= [BLUE,PURPLE,PINK,ORANGE,GREEN]
+        _C['blue']   = _hex(t.get('blue',   '#00c8ff'))
+        _C['pink']   = _hex(t.get('pink',   '#ff2d78'))
+        _C['green']  = _hex(t.get('green',  '#00ff9d'))
+        _C['purple'] = _hex(t.get('purple', '#bf5fff'))
+        _C['orange'] = _hex(t.get('orange', '#ff7c00'))
+        _C['red']    = _hex(t.get('red',    '#ff3c3c'))
+        _C['dim']    = _hex(t.get('dim',    '#507090'), 220)
+        _C['text']   = _hex(t.get('text',   '#c8e6ff'))
         return s.get('widgets',{})
     except: return {}
 
-def widget_accent(ws, wid, default):
+# Colour accessors — always read current value from _C
+def BLUE():   return _C['blue']
+def PINK():   return _C['pink']
+def GREEN():  return _C['green']
+def PURPLE(): return _C['purple']
+def ORANGE(): return _C['orange']
+def RED():    return _C['red']
+def DIM():    return _C['dim']
+def TEXT():   return _C['text']
+def RAINBOW():return [_C['blue'],_C['purple'],_C['pink'],_C['orange'],_C['green']]
+
+def widget_accent(ws, wid, default_fn):
     acc=ws.get(wid,{}).get('accent')
-    return _hex(acc) if acc else default
+    return _hex(acc) if acc else default_fn()
 
 def uc(p):
-    if p<40: return GREEN
-    if p<70: return BLUE
-    if p<85: return ORANGE
-    return PINK
+    if p<40: return GREEN()
+    if p<70: return BLUE()
+    if p<85: return ORANGE()
+    return RED()
 
 def tc(t):
-    if not t or t==0: return GREEN
-    if t<50: return GREEN
-    if t<70: return BLUE
-    if t<85: return ORANGE
-    return RED
+    if not t or t==0: return GREEN()
+    if t<50:  return GREEN()
+    if t<70:  return BLUE()
+    if t<85:  return ORANGE()
+    return RED()
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 def _f(name,size):
@@ -242,13 +252,12 @@ class Widget:
         with open(SETTINGS_FILE,'w') as f: json.dump(s,f,indent=2)
 
     def _paint(self):
-        ws=load_colors()
+        ws=load_colors()   # mutates _C in place — all color functions see changes
         stats,ok=get_stats()
         img=Image.new('RGBA',(self.W,self.H),(0,0,0,0))
         draw=ImageDraw.Draw(img)
         if ok: self._draw(draw,stats,ws)
-        else:  tx(draw,self.W//2,self.H//2,'NO SIGNAL',PINK,F_MED)
-        # Resize handle — subtle white triangle bottom-right
+        else:  tx(draw,self.W//2,self.H//2,'NO SIGNAL',PINK(),F_MED)
         s=18
         draw.polygon([(self.W-s,self.H),(self.W,self.H-s),(self.W,self.H)],
                      fill=(255,255,255,55))
@@ -275,23 +284,23 @@ class CpuWidget(Widget):
         cx=W//2; cy=r+pad+rw
 
         draw_ring(draw,cx,cy,r,u,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(u)}%', col, F_GIANT)
-        tx(draw,cx,cy+28,'CPU LOAD',   DIM, F_LABEL)
-        tx(draw,cx,cy+52,f'{freq} GHz',TEXT,F_SMALL)
+        tx(draw,cx,cy-30,f'{int(u)}%', col,    F_GIANT)
+        tx(draw,cx,cy+28,'CPU LOAD',   DIM(),  F_LABEL)
+        tx(draw,cx,cy+52,f'{freq} GHz',TEXT(), F_SMALL)
 
         if ct:
             tr=int(r*0.28); trx=cx-r+tr+2; try_=cy+r-tr-2
             draw_ring(draw,trx,try_,tr,ct/105*100,tc(ct),width=int(tr*0.12))
-            tx(draw,trx,try_-10,f'{ct}°',tc(ct),F_SMALL)
-            tx(draw,trx,try_+12,'TEMP',  DIM,   F_LABEL)
+            tx(draw,trx,try_-10,f'{ct}°',tc(ct), F_SMALL)
+            tx(draw,trx,try_+12,'TEMP',  DIM(),  F_LABEL)
 
         py=cy+r+rw+pad; hw=W//2-6
         draw.rounded_rectangle([4,   py,hw,  py+ph],radius=8,fill=(8,8,22,210))
         draw.rounded_rectangle([hw+4,py,W-4, py+ph],radius=8,fill=(8,8,22,210))
-        tx(draw,hw//2+2,        py+10,'CORES / THREADS',      DIM,F_LABEL)
-        tx(draw,hw//2+2,        py+34,f'{cores} / {threads}', acc,F_BODY)
-        tx(draw,hw+(W-hw)//2+2, py+10,'FREQUENCY',            DIM,F_LABEL)
-        tx(draw,hw+(W-hw)//2+2, py+34,f'{freq} GHz',          acc,F_BODY)
+        tx(draw,hw//2+2,        py+10,'CORES / THREADS',      DIM(),F_LABEL)
+        tx(draw,hw//2+2,        py+34,f'{cores} / {threads}', acc,  F_BODY)
+        tx(draw,hw+(W-hw)//2+2, py+10,'FREQUENCY',            DIM(),F_LABEL)
+        tx(draw,hw+(W-hw)//2+2, py+34,f'{freq} GHz',          acc,  F_BODY)
 
 
 class GpuWidget(Widget):
@@ -312,14 +321,14 @@ class GpuWidget(Widget):
         cx=W//2; cy=r+pad+rw
 
         draw_ring(draw,cx,cy,r,u,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(u)}%',col,F_GIANT)
-        tx(draw,cx,cy+22,'GPU LOAD',  DIM,F_LABEL)
-        if name: tx(draw,cx,cy+46,name[:18],DIM,F_LABEL)
+        tx(draw,cx,cy-30,f'{int(u)}%',col,    F_GIANT)
+        tx(draw,cx,cy+22,'GPU LOAD',  DIM(),  F_LABEL)
+        if name: tx(draw,cx,cy+46,name[:18],DIM(),F_LABEL)
 
         tr=int(r*0.28); trx=cx-r+tr+2; try_=cy+r-tr-2
         draw_ring(draw,trx,try_,tr,gt/105*100,tc(gt),width=int(tr*0.12))
-        tx(draw,trx,try_-10,f'{gt}°',tc(gt),F_SMALL)
-        tx(draw,trx,try_+12,'TEMP',  DIM,   F_LABEL)
+        tx(draw,trx,try_-10,f'{gt}°',tc(gt), F_SMALL)
+        tx(draw,trx,try_+12,'TEMP',  DIM(),  F_LABEL)
 
         py=cy+r+rw+pad; pw=(W-8)//3
         pwr_pct=(pwr/plim*100) if plim else 0
@@ -330,8 +339,8 @@ class GpuWidget(Widget):
         ]):
             x0=4+i*(pw+2)
             draw.rounded_rectangle([x0,py,x0+pw,py+ph],radius=8,fill=(8,8,22,210))
-            tx(draw,x0+pw//2,py+10,lbl,DIM, F_LABEL)
-            tx(draw,x0+pw//2,py+34,val,vcol,F_BODY)
+            tx(draw,x0+pw//2,py+10,lbl,DIM(), F_LABEL)
+            tx(draw,x0+pw//2,py+34,val,vcol,  F_BODY)
 
 
 class RamWidget(Widget):
@@ -347,17 +356,17 @@ class RamWidget(Widget):
         cx=W//2; cy=r+pad+rw
 
         draw_ring(draw,cx,cy,r,p,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(p)}%',         col, F_GIANT)
-        tx(draw,cx,cy+28,'RAM USED',            DIM, F_LABEL)
-        tx(draw,cx,cy+52,f'{used} / {total} GB',TEXT,F_SMALL)
+        tx(draw,cx,cy-30,f'{int(p)}%',         col,   F_GIANT)
+        tx(draw,cx,cy+28,'RAM USED',            DIM(), F_LABEL)
+        tx(draw,cx,cy+52,f'{used} / {total} GB',TEXT(),F_SMALL)
 
         py=cy+r+rw+pad; hw=W//2-6
         draw.rounded_rectangle([4,   py,hw,  py+ph],radius=8,fill=(8,8,22,210))
         draw.rounded_rectangle([hw+4,py,W-4, py+ph],radius=8,fill=(8,8,22,210))
-        tx(draw,hw//2+2,        py+10,'USED',      DIM,  F_LABEL)
-        tx(draw,hw//2+2,        py+34,f'{used} GB', acc, F_BODY)
-        tx(draw,hw+(W-hw)//2+2, py+10,'FREE',      DIM,  F_LABEL)
-        tx(draw,hw+(W-hw)//2+2, py+34,f'{free} GB',GREEN,F_BODY)
+        tx(draw,hw//2+2,        py+10,'USED',      DIM(),  F_LABEL)
+        tx(draw,hw//2+2,        py+34,f'{used} GB', acc,   F_BODY)
+        tx(draw,hw+(W-hw)//2+2, py+10,'FREE',      DIM(),  F_LABEL)
+        tx(draw,hw+(W-hw)//2+2, py+34,f'{free} GB',GREEN(),F_BODY)
 
 
 class NetWidget(Widget):
@@ -377,21 +386,21 @@ class NetWidget(Widget):
 
         cyu=half//2
         draw_ring(draw,cx,cyu,r,min(up/scale*100,100),acc_up,width=rw)
-        tx(draw,cx,cyu-18,f'{up}',   acc_up,F_BIG)
-        tx(draw,cx,cyu+14,'Mbps',    DIM,   F_SMALL)
-        tx(draw,cx,cyu+34,'UPLOAD',  DIM,   F_LABEL)
-        tx(draw,px,cyu-16,'PEAK',                       DIM,   F_LABEL,'la')
-        tx(draw,px,cyu+8, f'{NetWidget._peak_up} Mbps',acc_up,F_BODY, 'la')
+        tx(draw,cx,cyu-18,f'{up}',   acc_up, F_BIG)
+        tx(draw,cx,cyu+14,'Mbps',    DIM(),  F_SMALL)
+        tx(draw,cx,cyu+34,'UPLOAD',  DIM(),  F_LABEL)
+        tx(draw,px,cyu-16,'PEAK',                       DIM(),  F_LABEL,'la')
+        tx(draw,px,cyu+8, f'{NetWidget._peak_up} Mbps',acc_up, F_BODY, 'la')
 
         draw.line([8,half,W-8,half],fill=(50,50,100,160),width=1)
 
         cyd=half+half//2
-        draw_ring(draw,cx,cyd,r,min(dn/scale*100,100),BLUE,width=rw)
-        tx(draw,cx,cyd-18,f'{dn}',     BLUE,F_BIG)
-        tx(draw,cx,cyd+14,'Mbps',      DIM, F_SMALL)
-        tx(draw,cx,cyd+34,'DOWNLOAD',  DIM, F_LABEL)
-        tx(draw,px,cyd-16,'PEAK',                       DIM, F_LABEL,'la')
-        tx(draw,px,cyd+8, f'{NetWidget._peak_dn} Mbps',BLUE,F_BODY, 'la')
+        draw_ring(draw,cx,cyd,r,min(dn/scale*100,100),BLUE(),width=rw)
+        tx(draw,cx,cyd-18,f'{dn}',     BLUE(), F_BIG)
+        tx(draw,cx,cyd+14,'Mbps',      DIM(),  F_SMALL)
+        tx(draw,cx,cyd+34,'DOWNLOAD',  DIM(),  F_LABEL)
+        tx(draw,px,cyd-16,'PEAK',                       DIM(),  F_LABEL,'la')
+        tx(draw,px,cyd+8, f'{NetWidget._peak_dn} Mbps',BLUE(), F_BODY, 'la')
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -420,7 +429,6 @@ if __name__=='__main__':
     GAP=16; H=mh-GAP*2; wy=mt+GAP
     avail=mw-GAP*5; W4=avail//4
 
-    # Load saved sizes
     try:
         with open(SETTINGS_FILE) as f: _s=json.load(f)
         sizes=_s.get('sizes',{})
