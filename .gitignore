@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Temp/scratch scripts
+_*.py
+[a-z].py
+[a-z][a-z].py
+
 # Runtime / user-generated files
 positions.json
 settings.json
