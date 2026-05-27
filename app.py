@@ -2,8 +2,21 @@ import psutil
 import time
 import threading
 import subprocess
+import ctypes
+import sys
 from flask import Flask, jsonify
 from flask_cors import CORS
+
+# ── Re-elevate to admin if not already (needed for CPU temps via WMI) ─────────
+def is_admin():
+    try: return ctypes.windll.shell32.IsUserAnAdmin()
+    except: return False
+
+if not is_admin():
+    # Restart this script with admin rights
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, " ".join(f'"{a}"' for a in sys.argv), None, 1)
+    sys.exit(0)
 
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app)
@@ -26,12 +39,14 @@ _cpu_stats = {"usage": 0.0, "freq_ghz": 0.0, "freq_max_ghz": 0.0, "temp": None,
 def _cpu_poll_loop():
     while True:
         try:
-            usage = psutil.cpu_percent(interval=1)   # blocks 1 s, always accurate
+            usage = psutil.cpu_percent(interval=1)
             freq  = psutil.cpu_freq()
             _cpu_stats["usage"]        = usage
             _cpu_stats["freq_ghz"]     = round(freq.current / 1000, 2) if freq else 0
             _cpu_stats["freq_max_ghz"] = round(freq.max    / 1000, 2) if freq else 0
-            _cpu_stats["temp"]         = _get_cpu_temp()
+            new_temp = _get_cpu_temp()
+            if new_temp is not None:          # only update if we got a real reading
+                _cpu_stats["temp"] = new_temp
         except Exception as e:
             print(f"[CPU] poll error: {e}")
 
