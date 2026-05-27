@@ -3,6 +3,7 @@ widgets.py - SysMon floating widgets
 Pure Win32 layered windows — no tkinter window chrome at all.
 Per-pixel alpha via UpdateLayeredWindow. Truly transparent background.
 Colors loaded live from settings.json. Corner drag to resize.
+Positions saved to positions.json on move and resize.
 """
 import ctypes, ctypes.wintypes as wt
 import json, os, sys, time, threading, urllib.request
@@ -23,7 +24,7 @@ POS_FILE      = os.path.join(BASE_DIR, 'positions.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 API_URL       = 'http://127.0.0.1:5050/stats'
 
-# ── Palette stored in a mutable dict so load_colors() always takes effect ─────
+# ── Palette ───────────────────────────────────────────────────────────────────
 _C = {
     'blue':   (0,  200,255, 255),
     'pink':   (255, 45,120, 255),
@@ -40,7 +41,6 @@ def _hex(h, a=255):
     return tuple(int(h[i:i+2],16) for i in (0,2,4))+(a,)
 
 def load_colors():
-    """Reload palette from settings.json into _C — mutations visible everywhere."""
     try:
         with open(SETTINGS_FILE) as f: s=json.load(f)
         t=s.get('theme',{})
@@ -55,7 +55,6 @@ def load_colors():
         return s.get('widgets',{})
     except: return {}
 
-# Colour accessors — always read current value from _C
 def BLUE():   return _C['blue']
 def PINK():   return _C['pink']
 def GREEN():  return _C['green']
@@ -64,7 +63,6 @@ def ORANGE(): return _C['orange']
 def RED():    return _C['red']
 def DIM():    return _C['dim']
 def TEXT():   return _C['text']
-def RAINBOW():return [_C['blue'],_C['purple'],_C['pink'],_C['orange'],_C['green']]
 
 def widget_accent(ws, wid, default_fn):
     acc=ws.get(wid,{}).get('accent')
@@ -100,9 +98,17 @@ def load_pos():
         with open(POS_FILE) as f: return json.load(f)
     except: return {}
 
-def save_pos(wid,x,y):
+def save_pos(wid, x, y):
     p=load_pos(); p[wid]={'x':x,'y':y}
     with open(POS_FILE,'w') as f: json.dump(p,f,indent=2)
+
+def save_size(wid, w, h):
+    try:
+        with open(SETTINGS_FILE) as f: s=json.load(f)
+    except: s={}
+    if 'sizes' not in s: s['sizes']={}
+    s['sizes'][wid]={'w':w,'h':h}
+    with open(SETTINGS_FILE,'w') as f: json.dump(s,f,indent=2)
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 _stats={}; _lock=threading.Lock(); _ok=False
@@ -141,7 +147,7 @@ user32.CreateWindowExW.restype=HWND
 
 WS_EX_LAYERED=0x00080000; WS_EX_TOPMOST=0x00000008; WS_EX_TOOLWINDOW=0x00000080
 WS_POPUP=0x80000000; WS_VISIBLE=0x10000000; ULW_ALPHA=0x00000002
-AC_SRC_OVER=0x00; AC_SRC_ALPHA=0x01; GWL_EXSTYLE=-20
+AC_SRC_OVER=0x00; AC_SRC_ALPHA=0x01
 HTCAPTION=2; HTBOTTOMRIGHT=17
 WM_NCHITTEST=0x0084; WM_RBUTTONDOWN=0x0204; WM_DESTROY=0x0002
 WM_EXITSIZEMOVE=0x0232; WM_MOUSEMOVE=0x0200; WM_MOUSELEAVE=0x02A3
@@ -150,7 +156,6 @@ TME_LEAVE=0x00000002
 class TRACKMOUSEEVENT(ctypes.Structure):
     _fields_=[('cbSize',ctypes.c_ulong),('dwFlags',ctypes.c_ulong),
               ('hwndTrack',HWND),('dwHoverTime',ctypes.c_ulong)]
-
 class POINT(ctypes.Structure):  _fields_=[('x',c_int),('y',c_int)]
 class SIZE(ctypes.Structure):   _fields_=[('cx',c_int),('cy',c_int)]
 class BLEND(ctypes.Structure):
@@ -186,7 +191,6 @@ def push_image(hwnd,img):
     gdi32.SelectObject(mdc,old); gdi32.DeleteObject(hbm)
     gdi32.DeleteDC(mdc); user32.ReleaseDC(None,sdc)
 
-# ── Drawing helpers ───────────────────────────────────────────────────────────
 def draw_ring(draw,cx,cy,r,pct,color,track_col=(20,20,55,180),width=16):
     draw.ellipse([cx-r,cy-r,cx+r,cy+r],fill=(8,8,22,200))
     box=[cx-r,cy-r,cx+r,cy+r]
@@ -217,22 +221,23 @@ def _wnd_proc(hwnd,msg,wparam,lparam):
         if msg==WM_MOUSEMOVE:
             if not inst._hovered:
                 inst._hovered=True
-                # Ask Windows to send WM_MOUSELEAVE when mouse exits
-                tme=TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT),
-                                    TME_LEAVE,hwnd,0)
+                tme=TRACKMOUSEEVENT(ctypes.sizeof(TRACKMOUSEEVENT),TME_LEAVE,hwnd,0)
                 user32.TrackMouseEvent(byref(tme))
-                inst._paint()   # redraw to show handle
+                inst._paint()
         if msg==WM_MOUSELEAVE:
             inst._hovered=False
-            inst._paint()       # redraw to hide handle
+            inst._paint()
         if msg==WM_RBUTTONDOWN:
             user32.DestroyWindow(hwnd); _instances.pop(hwnd,None); return 0
         if msg==WM_DESTROY:
             _instances.pop(hwnd,None); return 0
         if msg==WM_EXITSIZEMOVE:
+            # Fires after BOTH drag-move AND resize — save both position and size
             r=wt.RECT(); user32.GetWindowRect(hwnd,byref(r))
             inst.W=r.right-r.left; inst.H=r.bottom-r.top
-            inst._save_size(); inst._paint(); return 0
+            save_pos(inst.id, r.left, r.top)
+            save_size(inst.id, inst.W, inst.H)
+            inst._paint(); return 0
     return user32.DefWindowProcW(hwnd,msg,ctypes.c_size_t(wparam),ctypes.c_ssize_t(lparam))
 
 def _register_class():
@@ -257,25 +262,13 @@ class Widget:
         self._hovered=False
         self._paint(); self._schedule()
 
-    def _get_pos(self):
-        r=wt.RECT(); user32.GetWindowRect(self.hwnd,byref(r)); return r.left,r.top
-
-    def _save_size(self):
-        try:
-            with open(SETTINGS_FILE) as f: s=json.load(f)
-        except: s={}
-        if 'sizes' not in s: s['sizes']={}
-        s['sizes'][self.id]={'w':self.W,'h':self.H}
-        with open(SETTINGS_FILE,'w') as f: json.dump(s,f,indent=2)
-
     def _paint(self):
-        ws=load_colors()   # mutates _C in place — all color functions see changes
+        ws=load_colors()
         stats,ok=get_stats()
         img=Image.new('RGBA',(self.W,self.H),(0,0,0,0))
         draw=ImageDraw.Draw(img)
         if ok: self._draw(draw,stats,ws)
         else:  tx(draw,self.W//2,self.H//2,'NO SIGNAL',PINK(),F_MED)
-        # Resize handle — only visible on hover
         if self._hovered:
             s=18
             draw.polygon([(self.W-s,self.H),(self.W,self.H-s),(self.W,self.H)],
@@ -297,22 +290,18 @@ class CpuWidget(Widget):
         u=cpu.get('usage',0); col=uc(u)
         ct=cpu.get('temp'); freq=cpu.get('freq_ghz','--')
         cores=cpu.get('cores','--'); threads=cpu.get('threads','--')
-
         ph=58; pad=10
         r=int((H-ph-pad*3)*0.46); rw=max(14,int(r*0.14))
         cx=W//2; cy=r+pad+rw
-
         draw_ring(draw,cx,cy,r,u,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(u)}%', col,    F_GIANT)
-        tx(draw,cx,cy+28,'CPU LOAD',   DIM(),  F_LABEL)
-        tx(draw,cx,cy+52,f'{freq} GHz',TEXT(), F_SMALL)
-
+        tx(draw,cx,cy-30,f'{int(u)}%', col,   F_GIANT)
+        tx(draw,cx,cy+28,'CPU LOAD',   DIM(), F_LABEL)
+        tx(draw,cx,cy+52,f'{freq} GHz',TEXT(),F_SMALL)
         if ct:
             tr=int(r*0.28); trx=cx-r+tr+2; try_=cy+r-tr-2
             draw_ring(draw,trx,try_,tr,ct/105*100,tc(ct),width=int(tr*0.12))
-            tx(draw,trx,try_-10,f'{ct}°',tc(ct), F_SMALL)
-            tx(draw,trx,try_+12,'TEMP',  DIM(),  F_LABEL)
-
+            tx(draw,trx,try_-10,f'{ct}°',tc(ct),F_SMALL)
+            tx(draw,trx,try_+12,'TEMP',  DIM(), F_LABEL)
         py=cy+r+rw+pad; hw=W//2-6
         draw.rounded_rectangle([4,   py,hw,  py+ph],radius=8,fill=(8,8,22,210))
         draw.rounded_rectangle([hw+4,py,W-4, py+ph],radius=8,fill=(8,8,22,210))
@@ -324,33 +313,26 @@ class CpuWidget(Widget):
 
 class GpuWidget(Widget):
     GPU_MAX_CLK=2800
-
     def _draw(self,draw,s,ws):
         W,H=self.W,self.H; gpu=s.get('gpu',{})
         acc=widget_accent(ws,'gpu',PINK)
         u=gpu.get('gpu_usage',0); col=uc(u)
         gt=gpu.get('temp',0)
         vp=(gpu.get('mem_used',0)/max(gpu.get('mem_total',1),1))*100
-        fan=gpu.get('fan_speed',0); pwr=gpu.get('power_draw',0)
-        plim=gpu.get('power_limit',0)
+        fan=gpu.get('fan_speed',0); pwr=gpu.get('power_draw',0); plim=gpu.get('power_limit',0)
         name=(gpu.get('name','') or '').replace('NVIDIA GeForce ','').replace('GeForce ','')
-
         ph=58; pad=10
         r=int((H-ph-pad*3)*0.46); rw=max(14,int(r*0.14))
         cx=W//2; cy=r+pad+rw
-
         draw_ring(draw,cx,cy,r,u,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(u)}%',col,    F_GIANT)
-        tx(draw,cx,cy+22,'GPU LOAD',  DIM(),  F_LABEL)
+        tx(draw,cx,cy-30,f'{int(u)}%',col,   F_GIANT)
+        tx(draw,cx,cy+22,'GPU LOAD',  DIM(), F_LABEL)
         if name: tx(draw,cx,cy+46,name[:18],DIM(),F_LABEL)
-
         tr=int(r*0.28); trx=cx-r+tr+2; try_=cy+r-tr-2
         draw_ring(draw,trx,try_,tr,gt/105*100,tc(gt),width=int(tr*0.12))
-        tx(draw,trx,try_-10,f'{gt}°',tc(gt), F_SMALL)
-        tx(draw,trx,try_+12,'TEMP',  DIM(),  F_LABEL)
-
-        py=cy+r+rw+pad; pw=(W-8)//3
-        pwr_pct=(pwr/plim*100) if plim else 0
+        tx(draw,trx,try_-10,f'{gt}°',tc(gt),F_SMALL)
+        tx(draw,trx,try_+12,'TEMP',  DIM(), F_LABEL)
+        py=cy+r+rw+pad; pw=(W-8)//3; pwr_pct=(pwr/plim*100) if plim else 0
         for i,(lbl,val,vcol) in enumerate([
             ('VRAM', f'{int(vp)}%  {gpu.get("mem_used","--")}GB', uc(vp)),
             ('FAN',  f'{fan}%',                                     uc(fan)),
@@ -358,8 +340,8 @@ class GpuWidget(Widget):
         ]):
             x0=4+i*(pw+2)
             draw.rounded_rectangle([x0,py,x0+pw,py+ph],radius=8,fill=(8,8,22,210))
-            tx(draw,x0+pw//2,py+10,lbl,DIM(), F_LABEL)
-            tx(draw,x0+pw//2,py+34,val,vcol,  F_BODY)
+            tx(draw,x0+pw//2,py+10,lbl,DIM(),F_LABEL)
+            tx(draw,x0+pw//2,py+34,val,vcol, F_BODY)
 
 
 class RamWidget(Widget):
@@ -369,57 +351,48 @@ class RamWidget(Widget):
         p=ram.get('percent',0); col=uc(p)
         used=ram.get('used_gb',0); total=ram.get('total_gb',0)
         free=round(total-used,1) if total else '--'
-
         ph=58; pad=10
         r=int((H-ph-pad*3)*0.46); rw=max(14,int(r*0.14))
         cx=W//2; cy=r+pad+rw
-
         draw_ring(draw,cx,cy,r,p,col,width=rw)
-        tx(draw,cx,cy-30,f'{int(p)}%',         col,   F_GIANT)
-        tx(draw,cx,cy+28,'RAM USED',            DIM(), F_LABEL)
-        tx(draw,cx,cy+52,f'{used} / {total} GB',TEXT(),F_SMALL)
-
+        tx(draw,cx,cy-30,f'{int(p)}%',          col,  F_GIANT)
+        tx(draw,cx,cy+28,'RAM USED',             DIM(),F_LABEL)
+        tx(draw,cx,cy+52,f'{used} / {total} GB', TEXT(),F_SMALL)
         py=cy+r+rw+pad; hw=W//2-6
         draw.rounded_rectangle([4,   py,hw,  py+ph],radius=8,fill=(8,8,22,210))
         draw.rounded_rectangle([hw+4,py,W-4, py+ph],radius=8,fill=(8,8,22,210))
-        tx(draw,hw//2+2,        py+10,'USED',      DIM(),  F_LABEL)
-        tx(draw,hw//2+2,        py+34,f'{used} GB', acc,   F_BODY)
-        tx(draw,hw+(W-hw)//2+2, py+10,'FREE',      DIM(),  F_LABEL)
+        tx(draw,hw//2+2,        py+10,'USED',      DIM(), F_LABEL)
+        tx(draw,hw//2+2,        py+34,f'{used} GB', acc,  F_BODY)
+        tx(draw,hw+(W-hw)//2+2, py+10,'FREE',      DIM(), F_LABEL)
         tx(draw,hw+(W-hw)//2+2, py+34,f'{free} GB',GREEN(),F_BODY)
 
 
 class NetWidget(Widget):
     _peak_up=0.0; _peak_dn=0.0
-
     def _draw(self,draw,s,ws):
         W,H=self.W,self.H; net=s.get('network',{})
         up=net.get('upload_mbps',0); dn=net.get('download_mbps',0)
         acc_up=widget_accent(ws,'net',GREEN)
-
         NetWidget._peak_up=max(NetWidget._peak_up,up)
         NetWidget._peak_dn=max(NetWidget._peak_dn,dn)
         scale=max(100.0,NetWidget._peak_up,NetWidget._peak_dn)
-
         half=H//2; r=int(half*0.38); rw=max(10,int(r*0.18))
         cx=r+rw+10; px=cx+r+rw+18
-
         cyu=half//2
         draw_ring(draw,cx,cyu,r,min(up/scale*100,100),acc_up,width=rw)
-        tx(draw,cx,cyu-18,f'{up}',   acc_up, F_BIG)
-        tx(draw,cx,cyu+14,'Mbps',    DIM(),  F_SMALL)
-        tx(draw,cx,cyu+34,'UPLOAD',  DIM(),  F_LABEL)
-        tx(draw,px,cyu-16,'PEAK',                       DIM(),  F_LABEL,'la')
-        tx(draw,px,cyu+8, f'{NetWidget._peak_up} Mbps',acc_up, F_BODY, 'la')
-
+        tx(draw,cx,cyu-18,f'{up}',  acc_up,F_BIG)
+        tx(draw,cx,cyu+14,'Mbps',   DIM(), F_SMALL)
+        tx(draw,cx,cyu+34,'UPLOAD', DIM(), F_LABEL)
+        tx(draw,px,cyu-16,'PEAK',                       DIM(), F_LABEL,'la')
+        tx(draw,px,cyu+8, f'{NetWidget._peak_up} Mbps',acc_up,F_BODY, 'la')
         draw.line([8,half,W-8,half],fill=(50,50,100,160),width=1)
-
         cyd=half+half//2
         draw_ring(draw,cx,cyd,r,min(dn/scale*100,100),BLUE(),width=rw)
-        tx(draw,cx,cyd-18,f'{dn}',     BLUE(), F_BIG)
-        tx(draw,cx,cyd+14,'Mbps',      DIM(),  F_SMALL)
-        tx(draw,cx,cyd+34,'DOWNLOAD',  DIM(),  F_LABEL)
-        tx(draw,px,cyd-16,'PEAK',                       DIM(),  F_LABEL,'la')
-        tx(draw,px,cyd+8, f'{NetWidget._peak_dn} Mbps',BLUE(), F_BODY, 'la')
+        tx(draw,cx,cyd-18,f'{dn}',    BLUE(),F_BIG)
+        tx(draw,cx,cyd+14,'Mbps',     DIM(), F_SMALL)
+        tx(draw,cx,cyd+34,'DOWNLOAD', DIM(), F_LABEL)
+        tx(draw,px,cyd-16,'PEAK',                       DIM(), F_LABEL,'la')
+        tx(draw,px,cyd+8, f'{NetWidget._peak_dn} Mbps',BLUE(),F_BODY, 'la')
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -430,12 +403,17 @@ if __name__=='__main__':
     MONITORENUMPROC=ctypes.WINFUNCTYPE(ctypes.c_bool,ctypes.c_ulong,ctypes.c_ulong,
                                         ctypes.POINTER(wt.RECT),ctypes.c_double)
     user32.EnumDisplayMonitors(None,None,MONITORENUMPROC(_cb),0)
-    print(f'[Widgets] Monitors: {monitors}')
+    print(f'[Widgets] Monitors detected: {monitors}')
 
+    # Find the panel monitor — wide/short (landscape) OR tall/narrow (portrait)
+    # Priority: landscape panel (w >= h*2.5), then portrait panel (h >= w*2.5),
+    # then any non-primary monitor
     panel=None
     for m in monitors:
         l,t,r,b=m
-        if (r-l)>=(b-t)*2.5: panel=m; break
+        w,h=r-l,b-t
+        if w>=h*2.5 or h>=w*2.5:   # landscape OR portrait ultrawide ratio
+            panel=m; break
     if not panel:
         for m in monitors:
             if m[0]!=0 or m[1]!=0: panel=m; break
@@ -443,11 +421,26 @@ if __name__=='__main__':
 
     ml,mt,mr,mb=panel or (0,0,1920,480)
     mw=mr-ml; mh=mb-mt
-    print(f'[Widgets] Panel: {mw}x{mh} at ({ml},{mt})')
+    print(f'[Widgets] Using monitor: {mw}x{mh} at ({ml},{mt})')
 
-    GAP=16; H=mh-GAP*2; wy=mt+GAP
-    avail=mw-GAP*5; W4=avail//4
+    GAP=16
+    # Saved positions exist — widgets will use those directly, skip auto-layout
+    saved=load_pos()
+    all_saved=all(wid in saved for wid in ('cpu','gpu','ram','net'))
 
+    # Default layout: 4 equal columns across the short axis
+    # Works for both landscape (1920x480) and portrait (480x1920)
+    if mw>=mh:  # landscape
+        W4=( mw - GAP*5)//4; H=mh-GAP*2
+        wy=mt+GAP
+        xs={'cpu':ml+GAP,'gpu':ml+GAP*2+W4,'ram':ml+GAP*3+W4*2,'net':ml+GAP*4+W4*3}
+    else:       # portrait — stack vertically
+        W4=mw-GAP*2; H=(mh-GAP*5)//4
+        xs={'cpu':ml+GAP,'gpu':ml+GAP,'ram':ml+GAP,'net':ml+GAP}
+        wy_vals={'cpu':mt+GAP,'gpu':mt+GAP*2+H,'ram':mt+GAP*3+H*2,'net':mt+GAP*4+H*3}
+        wy=mt+GAP
+
+    # Load saved sizes
     try:
         with open(SETTINGS_FILE) as f: _s=json.load(f)
         sizes=_s.get('sizes',{})
@@ -455,7 +448,11 @@ if __name__=='__main__':
     def wsize(wid,dw,dh):
         sz=sizes.get(wid,{}); return sz.get('w',dw),sz.get('h',dh)
 
-    xs={'cpu':ml+GAP,'gpu':ml+GAP*2+W4,'ram':ml+GAP*3+W4*2,'net':ml+GAP*4+W4*3}
+    def wpos(wid):
+        if mw>=mh:
+            return (xs[wid], wy)
+        else:
+            return (xs[wid], wy_vals[wid])
 
     print('[Widgets] Waiting for stats server...')
     for _ in range(20):
@@ -465,10 +462,10 @@ if __name__=='__main__':
     _hinstance=_register_class()
     _root=tk.Tk(); _root.withdraw(); _root.overrideredirect(True)
 
-    CpuWidget('cpu',*wsize('cpu',W4,H),(xs['cpu'],wy))
-    GpuWidget('gpu',*wsize('gpu',W4,H),(xs['gpu'],wy))
-    RamWidget('ram',*wsize('ram',W4,H),(xs['ram'],wy))
-    NetWidget('net',*wsize('net',W4,H),(xs['net'],wy))
+    CpuWidget('cpu',*wsize('cpu',W4,H),wpos('cpu'))
+    GpuWidget('gpu',*wsize('gpu',W4,H),wpos('gpu'))
+    RamWidget('ram',*wsize('ram',W4,H),wpos('ram'))
+    NetWidget('net',*wsize('net',W4,H),wpos('net'))
 
     msg=MSG()
     while True:
