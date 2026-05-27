@@ -58,13 +58,18 @@ The VBS script launches everything silently with admin rights on every boot.
 
 ## CPU Temperature Note
 
-Windows blocks CPU temperature access without a kernel driver.
-`Launch.bat` auto-elevates to administrator which gives access to the built-in
-`MSAcpi_ThermalZoneTemperature` WMI sensor — no third-party tools needed.
+CPU temps are read from **HWiNFO64 shared memory** — the most accurate method,
+requires no admin rights, and works without any driver tricks.
 
-If temps still show N/A, install and run
-[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-as administrator — `app.py` will detect it automatically.
+**Setup (one time):**
+1. Download [HWiNFO64](https://www.hwinfo.com/download/) — free, portable version works
+2. Run HWiNFO64, open **Settings → General → enable Shared Memory Support**
+3. Leave HWiNFO64 running minimized in the tray
+
+SysMon will automatically read CPU Package temperature from it.
+
+If HWiNFO64 is not running, `app.py` falls back to WMI thermal zones (needs admin)
+and then LibreHardwareMonitor if installed. If none are available, temp shows N/A.
 
 ## Monitor Detection
 

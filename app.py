@@ -53,7 +53,15 @@ def _cpu_poll_loop():
 threading.Thread(target=_cpu_poll_loop, daemon=True).start()
 
 def _get_cpu_temp():
-    # Try psutil sensors (works on Linux; usually empty on Windows)
+    # Primary: HWiNFO64 shared memory (no admin needed, most accurate)
+    try:
+        t = _hwinfo_cpu_temp()
+        if t is not None:
+            return t
+    except Exception:
+        pass
+
+    # Fallback: psutil sensors (Linux / some Windows configs)
     try:
         temps = psutil.sensors_temperatures()
         if temps:
@@ -64,21 +72,20 @@ def _get_cpu_temp():
     except Exception:
         pass
 
-    # Windows: try WMI thermal zones (built-in, needs admin)
+    # Fallback: WMI thermal zones (needs admin)
     try:
         import wmi
         w = wmi.WMI(namespace="root\\wmi")
         zones = w.MSAcpi_ThermalZoneTemperature()
         if zones:
             temps = [(z.CurrentTemperature / 10.0) - 273.15 for z in zones]
-            # Filter out obviously wrong readings (below 0 or above 120)
             valid = [t for t in temps if 0 < t < 120]
             if valid:
                 return round(max(valid), 1)
     except Exception:
         pass
 
-    # Windows: try LibreHardwareMonitor / OpenHardwareMonitor via WMI
+    # Fallback: LibreHardwareMonitor / OpenHardwareMonitor
     try:
         import wmi
         for ns in ["root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"]:
@@ -94,6 +101,55 @@ def _get_cpu_temp():
     except Exception:
         pass
     return None
+
+
+# ── HWiNFO64 shared memory reader ────────────────────────────────────────────
+import ctypes as _ct, struct as _st
+
+_k32 = _ct.windll.kernel32
+_k32.OpenFileMappingW.restype = _ct.c_void_p
+_k32.MapViewOfFile.restype    = _ct.c_void_p
+
+_HWINFO_MAP   = "Global\\HWiNFO_SENS_SM2"
+_SENSOR_TEMP  = 1
+# Reading element layout (sz=460 per HWiNFO SDK):
+# 0:   tReading  (4)
+# 12:  szLabelOrig (128)
+# 284: Value (double 8)
+_LABEL_OFF = 12
+_VALUE_OFF = 284
+# We target "CPU Package" label — most accurate single CPU temp
+_CPU_LABELS = ['CPU Package', 'Core Max', 'CPU (Tdie)', 'CPU Temp']
+
+def _hwinfo_cpu_temp():
+    hmap = _k32.OpenFileMappingW(0x0004, False, _HWINFO_MAP)
+    if not hmap:
+        return None
+    try:
+        pmap = _k32.MapViewOfFile(hmap, 0x0004, 0, 0, 0)
+        if not pmap:
+            return None
+        try:
+            hdr      = bytes((_ct.c_char * 44).from_address(pmap))
+            off_read = _st.unpack_from('<I', hdr, 32)[0]
+            sz_read  = _st.unpack_from('<I', hdr, 36)[0]
+            num_read = _st.unpack_from('<I', hdr, 40)[0]
+            best = None
+            for i in range(num_read):
+                chunk  = bytes((_ct.c_char * sz_read).from_address(pmap + off_read + i*sz_read))
+                t_type = _st.unpack_from('<I', chunk, 0)[0]
+                if t_type != _SENSOR_TEMP:
+                    continue
+                label  = chunk[_LABEL_OFF:_LABEL_OFF+128].rstrip(b'\x00').decode('utf-8','replace')
+                if label in _CPU_LABELS:
+                    val = _st.unpack_from('<d', chunk, _VALUE_OFF)[0]
+                    if best is None or _CPU_LABELS.index(label) < _CPU_LABELS.index(best[0]):
+                        best = (label, val)
+            return round(best[1], 1) if best else None
+        finally:
+            _k32.UnmapViewOfFile(_ct.c_void_p(pmap))
+    finally:
+        _k32.CloseHandle(_ct.c_void_p(hmap))
 
 # ── GPU helpers ───────────────────────────────────────────────────────────────
 def _gpu_via_smi():
